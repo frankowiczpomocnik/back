@@ -44,6 +44,59 @@ const otpLimiter = rateLimit({
   message: { error: 'Too many OTP requests, please try again later.' }
 });
 
+// Sanity client
+const sanity = createClient({
+  projectId: process.env.SANITY_PROJECT_ID,
+  dataset: process.env.SANITY_DATASET,
+  useCdn: process.env.NODE_ENV === 'production',
+  apiVersion: "2025-03-07",
+  token: process.env.SANITY_TOKEN,
+});
+
+// Twilio client
+const twilioClient = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH_TOKEN);
+
+// File upload configuration
+const storage = multer.memoryStorage();
+const upload = multer({ 
+  storage,
+  limits: { 
+    fileSize: 5 * 1024 * 1024, // 5MB file size limit
+    files: 10 
+  },
+  fileFilter: (req, file, cb) => {
+    // Validate file types if needed
+    const allowedTypes = ['image/jpeg', 'image/png', 'application/pdf', 'application/msword'];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only JPEG, PNG, PDF and DOC files are allowed.'));
+    }
+  }
+});
+
+// Validation functions
+const validatePhone = (phone) => {
+  const phoneRegex = /^\+?\d{7,15}$/;
+  return phoneRegex.test(phone);
+};
+
+const validateRequest = (req, res, requiredFields) => {
+  for (const field of requiredFields) {
+    if (!req.body[field]) {
+      res.status(400).json({ error: `${field} is required` });
+      return false;
+    }
+  }
+  
+  if (req.body.phone && !validatePhone(req.body.phone)) {
+    res.status(400).json({ error: "Invalid phone number format" });
+    return false;
+  }
+  
+  return true;
+};
+
 
 app.post('/generate-token', (req, res) => {
   const payload = { user: '+48690483990' }; 
@@ -90,7 +143,7 @@ app.use((err, req, res, next) => {
     return res.status(500).json({ error: err.message, stack: err.stack });
   }
   
-  res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  res.status(500).json({ error: 'Internal Server Error' });
 });
 
 app.listen(PORT, () => {
