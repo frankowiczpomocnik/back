@@ -14,7 +14,7 @@ const OTP_EXPIRY = 10 * 60 * 1000; // 10 minutes in milliseconds
 
 // Разрешаем CORS для вашего фронтенда
 app.use(cors({
-  origin: 'http://localhost:4321',  // Разрешаем доступ только с этого домена
+  origin: 'https://sweet-heliotrope-8de65c.netlify.app',  // Разрешаем доступ только с этого домена
   credentials: true  // Разрешаем отправку cookies
 }));
 
