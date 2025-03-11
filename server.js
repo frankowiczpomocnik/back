@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
 require("dotenv").config();
+const helmet = require("helmet");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,10 +15,11 @@ const OTP_EXPIRY = 10 * 60 * 1000; // 10 minutes in milliseconds
 
 // Разрешаем CORS для вашего фронтенда
 app.use(cors({
-  origin: 'https://sweet-heliotrope-8de65c.netlify.app',  // Разрешаем доступ только с этого домена
+  origin: process.env.CORS_ORIGIN,  // Разрешаем доступ только с этого домена
   credentials: true  // Разрешаем отправку cookies
 }));
 
+app.use(helmet());
 app.use(express.json());
 app.use(cookieParser());
 
@@ -28,7 +30,7 @@ app.post('/generate-token', (req, res) => {
 
   // Сохраняем токен в cookie
   res.cookie('auth_token', token, { 
-    httpOnly: true, 
+    httpOnly: true,   
     secure: true,  
     sameSite: 'None', 
     maxAge: 3600000
