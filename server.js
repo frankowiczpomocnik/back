@@ -29,8 +29,8 @@ app.post('/generate-token', (req, res) => {
   // Сохраняем токен в cookie
   res.cookie('auth_token', token, { 
     httpOnly: true, 
-    secure: true,  // Должно быть true, если работаешь через HTTPS 
-    sameSite: 'None', // Позволяет передавать cookie между разными доменами 
+    secure: true,  
+    sameSite: 'None', 
     maxAge: 3600000
   }); // secure: false для HTTP
   res.json({ message: 'Token generated and stored in cookie', payload });
