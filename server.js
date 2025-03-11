@@ -81,6 +81,18 @@ app.get('/check-token', verifyToken, (req, res) => {
   res.json({ message: 'Token is valid', user: req.user });
 });
 
+
+// Global error handler
+app.use((err, req, res, next) => {
+  logger.error(err);
+  
+  if (NODE_ENV === 'development') {
+    return res.status(500).json({ error: err.message, stack: err.stack });
+  }
+  
+  res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+});
+
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
 });
