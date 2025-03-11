@@ -97,6 +97,10 @@ const validateRequest = (req, res, requiredFields) => {
   return true;
 };
 
+// Routes
+app.get("/api/ping", (req, res) => {
+  res.json({ message: "Server is running! 🚀" });
+});
 
 app.post('/generate-token', (req, res) => {
   const payload = { user: '+48690483990' }; 
@@ -132,6 +136,56 @@ const verifyToken = (req, res, next) => {
 
 app.get('/check-token', verifyToken, (req, res) => {
   res.json({ message: 'Token is valid', user: req.user });
+});
+
+app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
+  try {
+    if (!validateRequest(req, res, ['phone'])) return;
+
+    // Generate 4-digit OTP
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+    
+    // First check if an OTP already exists
+    const existingQuery = `*[_type == "otp" && phone == $phone][0]`;
+    const existingOtp = await sanity.fetch(existingQuery, { phone: req.body.phone });
+    
+    if (existingOtp) {
+      await sanity.delete(existingOtp._id);
+    }
+
+    // Send OTP via Twilio
+    // await twilioClient.messages.create({
+    //   body: `Your verification code is: ${otp}`,
+    //   from: process.env.TWILIO_PHONE,
+    //   to: req.body.phone
+    // });
+
+    // Create OTP document in Sanity
+    const doc = {
+      _type: "otp",    
+      otp,
+      phone: req.body.phone,     
+    };
+
+    const result = await sanity.create(doc);
+
+    // Schedule OTP deletion
+    setTimeout(async () => {
+      try {       
+        const stillExists = await sanity.fetch(`*[_id == $id][0]._id`, { id: result._id });
+        if (stillExists) {
+          await sanity.delete(result._id);
+          console.log(`OTP for ${req.body.phone} deleted from Sanity.`);
+        }
+      } catch (error) {
+        console.error("Failed to delete OTP:", error.message);
+      }
+    }, OTP_EXPIRY);
+
+    res.status(200).json({ message: "OTP sent successfully", phone: req.body.phone });
+  } catch (error) {
+    next(error);
+  }
 });
 
 
