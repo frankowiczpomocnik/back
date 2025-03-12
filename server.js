@@ -202,18 +202,22 @@ app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
     if (!validateRequest(req, res, ['phone', 'otp'])) return;
     
     const { phone, otp } = req.body;
-    
+    console.log(" OTP :", otp);
     // Find OTP record in Sanity
     const query = `*[_type == "otp" && phone == $phone][0]`;
     const otpRecord = await sanity.fetch(query, { phone });
-    
+    console.log("Received phone:", phone);
+console.log("Fetched OTP record:", otpRecord);
+if (otpRecord) {
+  console.log("Stored OTP:", otpRecord.otp, "Received OTP:", otp);
+}
     // Validate OTP
     if (!otpRecord ) {
       return res.status(400).json({ error: "Invalid OTP !otpRecord " });
     }
 
     if ( otpRecord.otp !== otp) {
-      return res.status(400).json({ error: `${otpRecord.otp} ------ ${otp} Invalid OTP otpRecord.otp !== otp` });
+      return res.status(400).json({ error: `otpRecord.otp !== otp` });
     }
     
     // Delete OTP after successful verification
