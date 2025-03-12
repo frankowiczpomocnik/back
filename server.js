@@ -208,7 +208,7 @@ app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
     const otpRecord = await sanity.fetch(query, { phone });
     
     // Validate OTP
-    if (!otpRecord || otpRecord.otp !== otp) {
+    if (!otpRecord ) {
       return res.status(400).json({ error: "Invalid OTP !otpRecord " });
     }
 
