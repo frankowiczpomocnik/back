@@ -17,11 +17,11 @@ const PORT = process.env.PORT || 3000;
 
 const SECRET_KEY = process.env.JWT_SECRET;
 
-const OTP_EXPIRY = 10 * 60 * 500; 
+const OTP_EXPIRY = 10 * 60 * 500;
 
 
 app.use(cors({
-  origin: process.env.CORS_ORIGIN,  
+  origin: process.env.CORS_ORIGIN,
   credentials: true,
   methods: ['GET', 'POST']
 }));
@@ -59,11 +59,11 @@ const twilioClient = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH_TOKE
 
 // File upload configuration
 const storage = multer.memoryStorage();
-const upload = multer({ 
+const upload = multer({
   storage,
-  limits: { 
+  limits: {
     fileSize: 5 * 1024 * 1024, // 5MB file size limit
-    files: 10 
+    files: 10
   },
   fileFilter: (req, file, cb) => {
     // Validate file types if needed
@@ -89,12 +89,12 @@ const validateRequest = (req, res, requiredFields) => {
       return false;
     }
   }
-  
+
   if (req.body.phone && !validatePhone(req.body.phone)) {
     res.status(400).json({ error: "Invalid phone number format" });
     return false;
   }
-  
+
   return true;
 };
 
@@ -104,16 +104,16 @@ app.get("/api/ping", (req, res) => {
 });
 
 app.post('/generate-token', (req, res) => {
-  const payload = { user: '+48690483990' }; 
+  const payload = { user: '+48690483990' };
   const token = jwt.sign(payload, SECRET_KEY, { expiresIn: '1h' });
 
 
-  res.cookie('auth_token', token, { 
-    httpOnly: true,   
-    secure: true,  
-    sameSite: 'None', 
+  res.cookie('auth_token', token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'None',
     maxAge: 3600000
-  }); 
+  });
   res.json({ message: 'Token generated and stored in cookie', payload });
 });
 
@@ -129,10 +129,23 @@ const verifyToken = (req, res, next) => {
     if (err) {
       return res.status(403).json({ error: 'Token is invalid' });
     }
-    req.user = decoded; 
+    req.user = decoded;
     next();
   });
 };
+
+async function waitForOtpRecord(phone, retries = 3, delay = 1000) {
+  for (let i = 0; i < retries; i++) {
+    const query = `*[_type == "otp" && phone == $phone][0]`;
+    const otpRecord = await sanity.fetch(query, { phone });
+
+    if (otpRecord) return otpRecord;
+
+    console.log(`Retrying fetch OTP (${i + 1}/${retries})...`);
+    await new Promise(res => setTimeout(res, delay));
+  }
+  return null;
+}
 
 
 app.get('/check-token', verifyToken, (req, res) => {
@@ -142,42 +155,42 @@ app.get('/check-token', verifyToken, (req, res) => {
 app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
   try {
     if (!validateRequest(req, res, ['phone'])) return;
-    
+
     // Generate 4-digit OTP
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
-    
+
     // First check if an OTP already exists and delete it
     const existingQuery = `*[_type == "otp" && phone == $phone][0]`;
     const existingOtp = await sanity.fetch(existingQuery, { phone: req.body.phone });
-    
+
     if (existingOtp) {
       await sanity.delete(existingOtp._id);
     }
-    
+
     // Create OTP document in Sanity
     const doc = {
       _type: "otp",
       otp,
       phone: req.body.phone,
     };
-    
+
     // First create the OTP in Sanity
     const result = await sanity.create(doc);
-    
+
     // Verify the OTP was created successfully
     const createdOtp = await sanity.fetch(`*[_id == $id][0]`, { id: result._id });
-    
+
     if (!createdOtp) {
       throw new Error("Failed to create OTP");
     }
-    
+
     // Only now send the SMS since we've confirmed the OTP exists in Sanity
     await twilioClient.messages.create({
       body: `Your verification code is: ${otp}`,
       from: process.env.TWILIO_PHONE,
       to: req.body.phone
     });
-    
+
     // Schedule OTP deletion
     setTimeout(async () => {
       try {
@@ -190,7 +203,7 @@ app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
         console.error("Failed to delete OTP:", error.message);
       }
     }, OTP_EXPIRY);
-    
+
     res.status(200).json({ message: "OTP sent successfully", phone: req.body.phone });
   } catch (error) {
     next(error);
@@ -200,40 +213,37 @@ app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
 app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
   try {
     if (!validateRequest(req, res, ['phone', 'otp'])) return;
-    
+
     const { phone, otp } = req.body;
-    console.log(" OTP :", otp);
+
     // Find OTP record in Sanity
-    const query = `*[_type == "otp" && phone == $phone][0]`;
-    const otpRecord = await sanity.fetch(query, { phone });
-    console.log("Received phone:", phone);
-console.log("Fetched OTP record:", otpRecord);
-if (otpRecord) {
-  console.log("Stored OTP:", otpRecord.otp, "Received OTP:", otp);
-}
+    const otpRecord = await waitForOtpRecord(phone);
+    if (!otpRecord) {
+      return res.status(400).json({ error: "Invalid OTP (not found)" });
+    }
     // Validate OTP
-    if (!otpRecord ) {
+    if (!otpRecord) {
       return res.status(400).json({ error: "Invalid OTP !otpRecord " });
     }
 
-    if ( otpRecord.otp !== otp) {
+    if (otpRecord.otp !== otp) {
       return res.status(400).json({ error: `otpRecord.otp !== otp` });
     }
-    
+
     // Delete OTP after successful verification
     await sanity.delete(otpRecord._id);
-    
+
     // Generate JWT token
     const token = jwt.sign({ phone }, SECRET_KEY, { expiresIn: "1h" });
-    
+
     // Set secure cookie
-    res.cookie("auth_token", token, {     
-      httpOnly: true,   
-      secure: true,  
-      sameSite: 'None', 
+    res.cookie("auth_token", token, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'None',
       maxAge: 60 * 60 * 1000
     });
-    
+
     res.status(200).json({ message: "✅ OTP verified successfully!" });
   } catch (error) {
     next(error); // Pass to the global error handler
@@ -244,7 +254,7 @@ app.post("/api/files", verifyToken, upload.array("files", 10), async (req, res, 
   try {
     // Получаем телефон из токена вместо body
     const { phone } = req.user;
-    
+
     // Проверяем только name в теле запроса
     if (!req.body.name) {
       return res.status(400).json({ error: "name is required" });
@@ -265,7 +275,7 @@ app.post("/api/files", verifyToken, upload.array("files", 10), async (req, res, 
     // Create document in Sanity
     const doc = {
       _type: "files",
-      name: req.body.name,         
+      name: req.body.name,
       phone, // Используем телефон из токена
       files: uploadedFiles,
       createdAt: new Date().toISOString()
@@ -283,7 +293,7 @@ app.post("/api/files", verifyToken, upload.array("files", 10), async (req, res, 
     res.status(201).json({ message: "Contact added successfully", data: result });
   } catch (error) {
     next(error);
-  } 
+  }
 });
 
 
@@ -292,16 +302,16 @@ app.post("/api/links", verifyToken, async (req, res, next) => {
   try {
     // Получаем телефон из токена вместо body
     const { phone } = req.user;
-    
+
     // Проверяем только name и link в теле запроса
     if (!req.body.name) {
       return res.status(400).json({ error: "name is required" });
     }
-    
+
     if (!req.body.link) {
       return res.status(400).json({ error: "link is required" });
     }
-    
+
     // URL validation
     try {
       new URL(req.body.link);
@@ -336,11 +346,11 @@ app.post("/api/links", verifyToken, async (req, res, next) => {
 // Global error handler
 app.use((err, req, res, next) => {
   logger.error(err);
-  
+
   if (NODE_ENV === 'development') {
     return res.status(500).json({ error: err.message, stack: err.stack });
   }
-  
+
   res.status(500).json({ error: 'Internal Server Error' });
 });
 
@@ -356,6 +366,6 @@ process.on('SIGTERM', () => {
     console.log('HTTP server closed');
     // Close any other resources or connections here
   });
-}); 
+});
 
 module.exports = app;
