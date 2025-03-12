@@ -209,7 +209,11 @@ app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
     
     // Validate OTP
     if (!otpRecord || otpRecord.otp !== otp) {
-      return res.status(400).json({ error: "Invalid OTP problem here " });
+      return res.status(400).json({ error: "Invalid OTP !otpRecord " });
+    }
+
+    if ( otpRecord.otp !== otp) {
+      return res.status(400).json({ error: "Invalid OTP otpRecord.otp !== otp " });
     }
     
     // Delete OTP after successful verification
