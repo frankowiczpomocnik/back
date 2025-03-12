@@ -137,7 +137,7 @@ const verifyToken = (req, res, next) => {
 async function waitForOtpRecord(phone, retries = 3, delay = 1000) {
   for (let i = 0; i < retries; i++) {
     const query = `*[_type == "otp" && phone == $phone][0]`;
-    const otpRecord = await sanity.fetch(query, { phone });
+    const otpRecord = await sanity.fetch(query, { phone, _ts: Date.now()  });
 
     if (otpRecord) return otpRecord;
 
