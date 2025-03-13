@@ -307,52 +307,6 @@ app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
   }
 });
 
-// app.post("/api/files", verifyToken, upload.array("files", 10), async (req, res, next) => {
-//   try {
-//     // Получаем телефон из токена вместо body
-//     const { phone } = req.user;
-
-//     // Проверяем только name в теле запроса
-//     if (!req.body.name) {
-//       return res.status(400).json({ error: "name is required" });
-//     }
-
-//     // Upload files to Sanity
-//     const fileUploads = req.files.map(async (file) => {
-//       const asset = await sanity.assets.upload("file", file.buffer, { filename: file.originalname });
-//       return {
-//         _key: crypto.randomUUID(),
-//         _type: "file",
-//         asset: { _type: "reference", _ref: asset._id }
-//       };
-//     });
-
-//     const uploadedFiles = await Promise.all(fileUploads);
-
-//     // Create document in Sanity
-//     const doc = {
-//       _type: "files",
-//       name: req.body.name,
-//       phone, // Используем телефон из токена
-//       files: uploadedFiles,
-//       createdAt: new Date().toISOString()
-//     };
-
-//     const result = await sanity.create(doc);
-
-//     // Clear cookie before sending response
-//     res.clearCookie("auth_token", {
-//       httpOnly: true,
-//       secure: true,
-//       sameSite: "None"
-//     });
-
-//     res.status(201).json({ message: "Contact added successfully", data: result });
-//   } catch (error) {
-//     next(error);
-//   }
-// });
-
 app.post("/api/files", verifyToken, upload.array("files", 10), async (req, res, next) => {
   try {
     const { phone } = req.user;
