@@ -199,19 +199,29 @@ const verifyToken = (req, res, next) => {
   });
 };
 
+// async function waitForOtpRecord(phone, retries = 3, delay = 1000) {
+//   for (let i = 0; i < retries; i++) {
+//     const query = `*[_type == "otp" && phone == $phone][0]`;
+//     const otpRecord = await sanity.fetch(query, { phone, _ts: Date.now()  });
+
+//     if (otpRecord) return otpRecord;
+
+//     console.log(`Retrying fetch OTP (${i + 1}/${retries})...`);
+//     await new Promise(res => setTimeout(res, delay));
+//   }
+//   return null;
+// }
+
 async function waitForOtpRecord(phone, retries = 3, delay = 1000) {
   for (let i = 0; i < retries; i++) {
-    const query = `*[_type == "otp" && phone == $phone][0]`;
-    const otpRecord = await sanity.fetch(query, { phone, _ts: Date.now()  });
-
+    const otpRecord = await redis.get(`otp:${phone}`);
     if (otpRecord) return otpRecord;
-
+    
     console.log(`Retrying fetch OTP (${i + 1}/${retries})...`);
     await new Promise(res => setTimeout(res, delay));
   }
   return null;
 }
-
 
 app.get('/check-token', verifyToken, (req, res) => {
   res.json({ message: 'Token is valid', user: req.user });
@@ -324,7 +334,7 @@ app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
     const otpKey = `otp:${phone}`;
 
     console.log(`🔵 Checking existing OTP for ${phone} in Redis`);
-    const existingOtp = await redis.get(otpKey);
+    const existingOtp = await waitForOtpRecord(phone);
     if (existingOtp) {
       console.log(`⚠️ OTP already exists for ${phone}, request denied.`);
       return res.status(400).json({ error: "OTP already sent. Please wait before requesting a new one." });
@@ -333,7 +343,7 @@ app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
     console.log(`🟢 Storing OTP for ${phone} in Redis: ${otp}`);
     await redis.set(otpKey, otp, { ex: OTP_EXPIRY / 1000 });
 
-    const testOtp = await redis.get(otpKey);
+    const testOtp = await waitForOtpRecord(phone);
     console.log(`✅ Redis now contains OTP: ${testOtp}`);
 
     console.log(`📨 Sending OTP to ${phone} via Twilio`);
@@ -358,7 +368,7 @@ app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
     const otpKey = `otp:${phone}`;
 
     console.log(`🔵 Fetching stored OTP for ${phone} from Redis`);
-    const storedOtp = await redis.get(otpKey);
+    const storedOtp = await waitForOtpRecord(phone);
     console.log(`Stored OTP (${typeof storedOtp}): ${storedOtp}, Entered OTP (${typeof otp}): ${otp}`);
     
     if (!storedOtp) {
@@ -390,6 +400,7 @@ app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
     next(error);
   }
 });
+
 
 
 
