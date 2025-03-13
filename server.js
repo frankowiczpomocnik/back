@@ -12,6 +12,9 @@ const crypto = require('crypto');
 const logger = require('pino')();
 require("dotenv").config();
 
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 1000; // 1 секунда
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -97,6 +100,60 @@ const validateRequest = (req, res, requiredFields) => {
 
   return true;
 };
+
+// Функция загрузки файла с повторными попытками
+async function uploadFileWithRetries(file, retries = MAX_RETRIES) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      console.log(`Uploading file: ${file.originalname}, Attempt: ${attempt}/${retries}`);
+      const asset = await sanity.assets.upload("file", file.buffer, { filename: file.originalname });
+
+      console.log(`✅ Success: ${file.originalname} uploaded as ${asset._id}`);
+      return {
+        _key: crypto.randomUUID(),
+        _type: "file",
+        asset: { _type: "reference", _ref: asset._id }
+      };
+    } catch (error) {
+      console.error(`❌ Error uploading ${file.originalname}:`, error.message);
+
+      if (attempt < retries) {
+        console.log(`Retrying in ${RETRY_DELAY}ms...`);
+        await new Promise(res => setTimeout(res, RETRY_DELAY));
+      } else {
+        console.error(`❌ Failed to upload ${file.originalname} after ${retries} attempts`);
+      }
+    }
+  }
+  return null; // Если не удалось загрузить файл
+}
+
+// Функция создания документа с повторными попытками
+async function createDocumentWithRetries(doc, retries = MAX_RETRIES) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      console.log(`📄 Creating document, attempt ${attempt}/${retries}`);
+      const result = await sanity.create(doc);
+      console.log(`✅ Document created with ID: ${result._id}`);
+      return result;
+    } catch (error) {
+      console.error(`❌ Error creating document: ${error.message}`);
+
+      if (error.message.includes("already exists")) {
+        console.warn("⚠️ Document already exists, skipping creation.");
+        return null;
+      }
+
+      if (attempt < retries) {
+        console.log(`Retrying in ${RETRY_DELAY}ms...`);
+        await new Promise(res => setTimeout(res, RETRY_DELAY));
+      } else {
+        console.error("❌ Failed to create document after multiple attempts.");
+        throw error; // Прокидываем ошибку дальше
+      }
+    }
+  }
+}
 
 // Routes
 app.get("/api/ping", (req, res) => {
@@ -250,53 +307,99 @@ app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
   }
 });
 
+// app.post("/api/files", verifyToken, upload.array("files", 10), async (req, res, next) => {
+//   try {
+//     // Получаем телефон из токена вместо body
+//     const { phone } = req.user;
+
+//     // Проверяем только name в теле запроса
+//     if (!req.body.name) {
+//       return res.status(400).json({ error: "name is required" });
+//     }
+
+//     // Upload files to Sanity
+//     const fileUploads = req.files.map(async (file) => {
+//       const asset = await sanity.assets.upload("file", file.buffer, { filename: file.originalname });
+//       return {
+//         _key: crypto.randomUUID(),
+//         _type: "file",
+//         asset: { _type: "reference", _ref: asset._id }
+//       };
+//     });
+
+//     const uploadedFiles = await Promise.all(fileUploads);
+
+//     // Create document in Sanity
+//     const doc = {
+//       _type: "files",
+//       name: req.body.name,
+//       phone, // Используем телефон из токена
+//       files: uploadedFiles,
+//       createdAt: new Date().toISOString()
+//     };
+
+//     const result = await sanity.create(doc);
+
+//     // Clear cookie before sending response
+//     res.clearCookie("auth_token", {
+//       httpOnly: true,
+//       secure: true,
+//       sameSite: "None"
+//     });
+
+//     res.status(201).json({ message: "Contact added successfully", data: result });
+//   } catch (error) {
+//     next(error);
+//   }
+// });
+
 app.post("/api/files", verifyToken, upload.array("files", 10), async (req, res, next) => {
   try {
-    // Получаем телефон из токена вместо body
     const { phone } = req.user;
 
-    // Проверяем только name в теле запроса
     if (!req.body.name) {
       return res.status(400).json({ error: "name is required" });
     }
 
-    // Upload files to Sanity
-    const fileUploads = req.files.map(async (file) => {
-      const asset = await sanity.assets.upload("file", file.buffer, { filename: file.originalname });
-      return {
-        _key: crypto.randomUUID(),
-        _type: "file",
-        asset: { _type: "reference", _ref: asset._id }
-      };
-    });
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: "No files uploaded" });
+    }
 
-    const uploadedFiles = await Promise.all(fileUploads);
+    console.log(`📂 Uploading ${req.files.length} files for user: ${phone}`);
 
-    // Create document in Sanity
+    // Загружаем файлы с повторными попытками
+    const fileUploads = await Promise.all(req.files.map(file => uploadFileWithRetries(file)));
+
+    // Удаляем неудачные загрузки
+    const successfulUploads = fileUploads.filter(file => file !== null);
+
+    if (successfulUploads.length === 0) {
+      return res.status(500).json({ error: "All file uploads failed" });
+    }
+
+    // Создаем документ в Sanity
     const doc = {
       _type: "files",
       name: req.body.name,
-      phone, // Используем телефон из токена
-      files: uploadedFiles,
+      phone,
+      files: successfulUploads,
       createdAt: new Date().toISOString()
     };
 
-    const result = await sanity.create(doc);
+    // Улучшенная функция создания документа
+    const result = await createDocumentWithRetries(doc);
 
-    // Clear cookie before sending response
     res.clearCookie("auth_token", {
       httpOnly: true,
       secure: true,
       sameSite: "None"
     });
 
-    res.status(201).json({ message: "Contact added successfully", data: result });
+    res.status(201).json({ message: "Files uploaded successfully", data: result });
   } catch (error) {
     next(error);
   }
 });
-
-
 
 app.post("/api/links", verifyToken, async (req, res, next) => {
   try {
