@@ -330,8 +330,11 @@ app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
       return res.status(400).json({ error: "OTP already sent. Please wait before requesting a new one." });
     }
 
-    console.log(`🟢 Storing OTP for ${phone} in Redis`);
+    console.log(`🟢 Storing OTP for ${phone} in Redis: ${otp}`);
     await redis.set(otpKey, otp, { ex: OTP_EXPIRY / 1000 });
+
+    const testOtp = await redis.get(otpKey);
+    console.log(`✅ Redis now contains OTP: ${testOtp}`);
 
     console.log(`📨 Sending OTP to ${phone} via Twilio`);
     await twilioClient.messages.create({
@@ -356,13 +359,14 @@ app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
 
     console.log(`🔵 Fetching stored OTP for ${phone} from Redis`);
     const storedOtp = await redis.get(otpKey);
-    console.log(`Stored OTP: ${storedOtp}, Entered OTP: ${otp}`);
+    console.log(`Stored OTP (${typeof storedOtp}): ${storedOtp}, Entered OTP (${typeof otp}): ${otp}`);
+    
     if (!storedOtp) {
       console.log(`❌ No OTP found for ${phone} or it has expired.`);
       return res.status(400).json({ error: "Invalid or expired OTP" });
     }
 
-    if (storedOtp !== otp) {
+    if (storedOtp.toString().trim() !== otp.toString().trim()) {
       console.log(`❌ Incorrect OTP entered for ${phone}`);
       return res.status(400).json({ error: "Incorrect OTP" });
     }
@@ -386,6 +390,7 @@ app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
     next(error);
   }
 });
+
 
 
 
