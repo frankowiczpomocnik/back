@@ -11,7 +11,13 @@ const rateLimit = require("express-rate-limit");
 const crypto = require('crypto');
 const logger = require('pino')();
 require("dotenv").config();
-import { Redis } from '@upstash/redis'
+const { Redis } = require('@upstash/redis');
+
+// Upstash Redis
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000;
@@ -49,11 +55,6 @@ const otpLimiter = rateLimit({
   message: { error: 'Too many OTP requests, please try again later.' }
 });
 
-//Upstash Redis
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN,
-})
 
 // Sanity client
 const sanity = createClient({
