@@ -323,16 +323,17 @@ app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
     const otpKey = `otp:${phone}`;
 
-    // Проверяем, не существует ли уже OTP для данного номера
+    console.log(`🔵 Checking existing OTP for ${phone} in Redis`);
     const existingOtp = await redis.get(otpKey);
     if (existingOtp) {
+      console.log(`⚠️ OTP already exists for ${phone}, request denied.`);
       return res.status(400).json({ error: "OTP already sent. Please wait before requesting a new one." });
     }
 
-    // Сохраняем OTP в Redis с временем жизни OTP_EXPIRY
+    console.log(`🟢 Storing OTP for ${phone} in Redis`);
     await redis.set(otpKey, otp, { ex: OTP_EXPIRY / 1000 });
 
-    // Отправляем OTP через Twilio
+    console.log(`📨 Sending OTP to ${phone} via Twilio`);
     await twilioClient.messages.create({
       body: `Your verification code is: ${otp}`,
       from: process.env.TWILIO_PHONE,
@@ -341,6 +342,7 @@ app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
 
     res.status(200).json({ message: "OTP sent successfully", phone });
   } catch (error) {
+    console.error("❌ Error in send-otp: ", error);
     next(error);
   }
 });
@@ -352,23 +354,25 @@ app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
     const { phone, otp } = req.body;
     const otpKey = `otp:${phone}`;
 
-    // Получаем OTP из Redis
+    console.log(`🔵 Fetching stored OTP for ${phone} from Redis`);
     const storedOtp = await redis.get(otpKey);
+    console.log(`Stored OTP: ${storedOtp}, Entered OTP: ${otp}`);
     if (!storedOtp) {
+      console.log(`❌ No OTP found for ${phone} or it has expired.`);
       return res.status(400).json({ error: "Invalid or expired OTP" });
     }
 
     if (storedOtp !== otp) {
+      console.log(`❌ Incorrect OTP entered for ${phone}`);
       return res.status(400).json({ error: "Incorrect OTP" });
     }
 
-    // Удаляем OTP после успешной проверки
+    console.log(`✅ OTP verified successfully for ${phone}, deleting from Redis`);
     await redis.del(otpKey);
 
-    // Генерируем JWT токен
     const token = jwt.sign({ phone }, SECRET_KEY, { expiresIn: "1h" });
 
-    // Устанавливаем защищенный cookie
+    console.log(`🔑 Generating JWT token for ${phone}`);
     res.cookie("auth_token", token, {
       httpOnly: true,
       secure: true,
@@ -378,9 +382,11 @@ app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
 
     res.status(200).json({ message: "✅ OTP verified successfully!" });
   } catch (error) {
+    console.error("❌ Error in validate-otp: ", error);
     next(error);
   }
 });
+
 
 
 app.post("/api/files", verifyToken, upload.array("files", 10), async (req, res, next) => {
