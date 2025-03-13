@@ -13,7 +13,7 @@ const logger = require('pino')();
 require("dotenv").config();
 
 const MAX_RETRIES = 3;
-const RETRY_DELAY = 1000; // 1 секунда
+const RETRY_DELAY = 1000;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -385,7 +385,8 @@ app.post("/api/links", verifyToken, async (req, res, next) => {
       createdAt: new Date().toISOString()
     };
 
-    const result = await sanity.create(doc);
+    // Улучшенная функция создания документа
+    const result = await createDocumentWithRetries(doc);
 
     // Clear cookie before sending response
     res.clearCookie("auth_token", {
