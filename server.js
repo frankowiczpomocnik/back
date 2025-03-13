@@ -11,6 +11,7 @@ const rateLimit = require("express-rate-limit");
 const crypto = require('crypto');
 const logger = require('pino')();
 require("dotenv").config();
+import { Redis } from '@upstash/redis'
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000;
@@ -47,6 +48,12 @@ const otpLimiter = rateLimit({
   max: 5, // limit each IP to 5 OTP requests per hour
   message: { error: 'Too many OTP requests, please try again later.' }
 });
+
+//Upstash Redis
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+})
 
 // Sanity client
 const sanity = createClient({
@@ -209,59 +216,129 @@ app.get('/check-token', verifyToken, (req, res) => {
   res.json({ message: 'Token is valid', user: req.user });
 });
 
+// app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
+//   try {
+//     if (!validateRequest(req, res, ['phone'])) return;
+
+//     // Generate 4-digit OTP
+//     const otp = Math.floor(1000 + Math.random() * 9000).toString();
+
+//     // First check if an OTP already exists and delete it
+//     const existingQuery = `*[_type == "otp" && phone == $phone][0]`;
+//     const existingOtp = await sanity.fetch(existingQuery, { phone: req.body.phone });
+
+//     if (existingOtp) {
+//       await sanity.delete(existingOtp._id);
+//     }
+
+//     // Create OTP document in Sanity
+//     const doc = {
+//       _type: "otp",
+//       otp,
+//       phone: req.body.phone,
+//     };
+
+//     // First create the OTP in Sanity
+//     const result = await sanity.create(doc);
+
+//     // Verify the OTP was created successfully
+//     const createdOtp = await sanity.fetch(`*[_id == $id][0]`, { id: result._id });
+
+//     if (!createdOtp) {
+//       throw new Error("Failed to create OTP");
+//     }
+
+//     // Only now send the SMS since we've confirmed the OTP exists in Sanity
+//     await twilioClient.messages.create({
+//       body: `Your verification code is: ${otp}`,
+//       from: process.env.TWILIO_PHONE,
+//       to: req.body.phone
+//     });
+
+//     // Schedule OTP deletion
+//     setTimeout(async () => {
+//       try {
+//         const stillExists = await sanity.fetch(`*[_id == $id][0]._id`, { id: result._id });
+//         if (stillExists) {
+//           await sanity.delete(result._id);
+//           console.log(`OTP for ${req.body.phone} deleted from Sanity.`);
+//         }
+//       } catch (error) {
+//         console.error("Failed to delete OTP:", error.message);
+//       }
+//     }, OTP_EXPIRY);
+
+//     res.status(200).json({ message: "OTP sent successfully", phone: req.body.phone });
+//   } catch (error) {
+//     next(error);
+//   }
+// });
+
+// app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
+//   try {
+//     if (!validateRequest(req, res, ['phone', 'otp'])) return;
+
+//     const { phone, otp } = req.body;
+
+//     // Find OTP record in Sanity
+//     const otpRecord = await waitForOtpRecord(phone);
+//     if (!otpRecord) {
+//       return res.status(400).json({ error: "Invalid OTP (not found)" });
+//     }
+//     // Validate OTP
+//     if (!otpRecord) {
+//       return res.status(400).json({ error: "Invalid OTP !otpRecord " });
+//     }
+
+//     if (otpRecord.otp !== otp) {
+//       return res.status(400).json({ error: `otpRecord.otp !== otp` });
+//     }
+
+//     // Delete OTP after successful verification
+//     await sanity.delete(otpRecord._id);
+
+//     // Generate JWT token
+//     const token = jwt.sign({ phone }, SECRET_KEY, { expiresIn: "1h" });
+
+//     // Set secure cookie
+//     res.cookie("auth_token", token, {
+//       httpOnly: true,
+//       secure: true,
+//       sameSite: 'None',
+//       maxAge: 60 * 60 * 1000
+//     });
+
+//     res.status(200).json({ message: "✅ OTP verified successfully!" });
+//   } catch (error) {
+//     next(error); // Pass to the global error handler
+//   }
+// });
+
 app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
   try {
     if (!validateRequest(req, res, ['phone'])) return;
 
-    // Generate 4-digit OTP
+    const { phone } = req.body;
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
+    const otpKey = `otp:${phone}`;
 
-    // First check if an OTP already exists and delete it
-    const existingQuery = `*[_type == "otp" && phone == $phone][0]`;
-    const existingOtp = await sanity.fetch(existingQuery, { phone: req.body.phone });
-
+    // Проверяем, не существует ли уже OTP для данного номера
+    const existingOtp = await redis.get(otpKey);
     if (existingOtp) {
-      await sanity.delete(existingOtp._id);
+      return res.status(400).json({ error: "OTP already sent. Please wait before requesting a new one." });
     }
 
-    // Create OTP document in Sanity
-    const doc = {
-      _type: "otp",
-      otp,
-      phone: req.body.phone,
-    };
+    // Сохраняем OTP в Redis с временем жизни OTP_EXPIRY
+    await redis.set(otpKey, otp, { ex: OTP_EXPIRY / 1000 });
 
-    // First create the OTP in Sanity
-    const result = await sanity.create(doc);
-
-    // Verify the OTP was created successfully
-    const createdOtp = await sanity.fetch(`*[_id == $id][0]`, { id: result._id });
-
-    if (!createdOtp) {
-      throw new Error("Failed to create OTP");
-    }
-
-    // Only now send the SMS since we've confirmed the OTP exists in Sanity
+    // Отправляем OTP через Twilio
     await twilioClient.messages.create({
       body: `Your verification code is: ${otp}`,
       from: process.env.TWILIO_PHONE,
-      to: req.body.phone
+      to: phone
     });
 
-    // Schedule OTP deletion
-    setTimeout(async () => {
-      try {
-        const stillExists = await sanity.fetch(`*[_id == $id][0]._id`, { id: result._id });
-        if (stillExists) {
-          await sanity.delete(result._id);
-          console.log(`OTP for ${req.body.phone} deleted from Sanity.`);
-        }
-      } catch (error) {
-        console.error("Failed to delete OTP:", error.message);
-      }
-    }, OTP_EXPIRY);
-
-    res.status(200).json({ message: "OTP sent successfully", phone: req.body.phone });
+    res.status(200).json({ message: "OTP sent successfully", phone });
   } catch (error) {
     next(error);
   }
@@ -272,28 +349,25 @@ app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
     if (!validateRequest(req, res, ['phone', 'otp'])) return;
 
     const { phone, otp } = req.body;
+    const otpKey = `otp:${phone}`;
 
-    // Find OTP record in Sanity
-    const otpRecord = await waitForOtpRecord(phone);
-    if (!otpRecord) {
-      return res.status(400).json({ error: "Invalid OTP (not found)" });
-    }
-    // Validate OTP
-    if (!otpRecord) {
-      return res.status(400).json({ error: "Invalid OTP !otpRecord " });
+    // Получаем OTP из Redis
+    const storedOtp = await redis.get(otpKey);
+    if (!storedOtp) {
+      return res.status(400).json({ error: "Invalid or expired OTP" });
     }
 
-    if (otpRecord.otp !== otp) {
-      return res.status(400).json({ error: `otpRecord.otp !== otp` });
+    if (storedOtp !== otp) {
+      return res.status(400).json({ error: "Incorrect OTP" });
     }
 
-    // Delete OTP after successful verification
-    await sanity.delete(otpRecord._id);
+    // Удаляем OTP после успешной проверки
+    await redis.del(otpKey);
 
-    // Generate JWT token
+    // Генерируем JWT токен
     const token = jwt.sign({ phone }, SECRET_KEY, { expiresIn: "1h" });
 
-    // Set secure cookie
+    // Устанавливаем защищенный cookie
     res.cookie("auth_token", token, {
       httpOnly: true,
       secure: true,
@@ -303,9 +377,10 @@ app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
 
     res.status(200).json({ message: "✅ OTP verified successfully!" });
   } catch (error) {
-    next(error); // Pass to the global error handler
+    next(error);
   }
 });
+
 
 app.post("/api/files", verifyToken, upload.array("files", 10), async (req, res, next) => {
   try {
