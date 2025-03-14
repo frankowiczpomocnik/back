@@ -199,18 +199,7 @@ const verifyToken = (req, res, next) => {
   });
 };
 
-// async function waitForOtpRecord(phone, retries = 3, delay = 1000) {
-//   for (let i = 0; i < retries; i++) {
-//     const query = `*[_type == "otp" && phone == $phone][0]`;
-//     const otpRecord = await sanity.fetch(query, { phone, _ts: Date.now()  });
 
-//     if (otpRecord) return otpRecord;
-
-//     console.log(`Retrying fetch OTP (${i + 1}/${retries})...`);
-//     await new Promise(res => setTimeout(res, delay));
-//   }
-//   return null;
-// }
 
 async function waitForOtpRecord(phone, retries = 3, delay = 1000) {
   for (let i = 0; i < retries; i++) {
@@ -223,107 +212,21 @@ async function waitForOtpRecord(phone, retries = 3, delay = 1000) {
   return null;
 }
 
+const retry = async (fn, retries = 3, delay = 1000) => {
+  try {
+    return await fn();
+  } catch (error) {
+    if (retries <= 0) throw error;
+    await new Promise(resolve => setTimeout(resolve, delay));
+    return retry(fn, retries - 1, delay * 2); // Exponential backoff
+  }
+};
+
 app.get('/check-token', verifyToken, (req, res) => {
   res.json({ message: 'Token is valid', user: req.user });
 });
 
-// app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
-//   try {
-//     if (!validateRequest(req, res, ['phone'])) return;
 
-//     // Generate 4-digit OTP
-//     const otp = Math.floor(1000 + Math.random() * 9000).toString();
-
-//     // First check if an OTP already exists and delete it
-//     const existingQuery = `*[_type == "otp" && phone == $phone][0]`;
-//     const existingOtp = await sanity.fetch(existingQuery, { phone: req.body.phone });
-
-//     if (existingOtp) {
-//       await sanity.delete(existingOtp._id);
-//     }
-
-//     // Create OTP document in Sanity
-//     const doc = {
-//       _type: "otp",
-//       otp,
-//       phone: req.body.phone,
-//     };
-
-//     // First create the OTP in Sanity
-//     const result = await sanity.create(doc);
-
-//     // Verify the OTP was created successfully
-//     const createdOtp = await sanity.fetch(`*[_id == $id][0]`, { id: result._id });
-
-//     if (!createdOtp) {
-//       throw new Error("Failed to create OTP");
-//     }
-
-//     // Only now send the SMS since we've confirmed the OTP exists in Sanity
-//     await twilioClient.messages.create({
-//       body: `Your verification code is: ${otp}`,
-//       from: process.env.TWILIO_PHONE,
-//       to: req.body.phone
-//     });
-
-//     // Schedule OTP deletion
-//     setTimeout(async () => {
-//       try {
-//         const stillExists = await sanity.fetch(`*[_id == $id][0]._id`, { id: result._id });
-//         if (stillExists) {
-//           await sanity.delete(result._id);
-//           console.log(`OTP for ${req.body.phone} deleted from Sanity.`);
-//         }
-//       } catch (error) {
-//         console.error("Failed to delete OTP:", error.message);
-//       }
-//     }, OTP_EXPIRY);
-
-//     res.status(200).json({ message: "OTP sent successfully", phone: req.body.phone });
-//   } catch (error) {
-//     next(error);
-//   }
-// });
-
-// app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
-//   try {
-//     if (!validateRequest(req, res, ['phone', 'otp'])) return;
-
-//     const { phone, otp } = req.body;
-
-//     // Find OTP record in Sanity
-//     const otpRecord = await waitForOtpRecord(phone);
-//     if (!otpRecord) {
-//       return res.status(400).json({ error: "Invalid OTP (not found)" });
-//     }
-//     // Validate OTP
-//     if (!otpRecord) {
-//       return res.status(400).json({ error: "Invalid OTP !otpRecord " });
-//     }
-
-//     if (otpRecord.otp !== otp) {
-//       return res.status(400).json({ error: `otpRecord.otp !== otp` });
-//     }
-
-//     // Delete OTP after successful verification
-//     await sanity.delete(otpRecord._id);
-
-//     // Generate JWT token
-//     const token = jwt.sign({ phone }, SECRET_KEY, { expiresIn: "1h" });
-
-//     // Set secure cookie
-//     res.cookie("auth_token", token, {
-//       httpOnly: true,
-//       secure: true,
-//       sameSite: 'None',
-//       maxAge: 60 * 60 * 1000
-//     });
-
-//     res.status(200).json({ message: "✅ OTP verified successfully!" });
-//   } catch (error) {
-//     next(error); // Pass to the global error handler
-//   }
-// });
 
 app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
   try {
@@ -347,11 +250,16 @@ app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
     console.log(`✅ Redis now contains OTP: ${testOtp}`);
 
     console.log(`📨 Sending OTP to ${phone} via Twilio`);
-    await twilioClient.messages.create({
-      body: `Your verification code is: ${otp}`,
-      from: process.env.TWILIO_PHONE,
-      to: phone
-    });
+    
+    // Пример функции retry для асинхронных операций
+
+
+// Пример применения
+// await retry(() => twilioClient.messages.create({
+//   body: `Twój kod weryfikacyjny to: ${otp}`,
+//   from: process.env.TWILIO_PHONE,
+//   to: req.body.phone
+// }));
 
     res.status(200).json({ message: "OTP sent successfully", phone });
   } catch (error) {
@@ -408,9 +316,14 @@ app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
 app.post("/api/files", verifyToken, upload.array("files", 10), async (req, res, next) => {
   try {
     const { phone } = req.user;
-
-    if (!req.body.name) {
+    const { name, description } = req.body;
+    console.log(`📂 description ${description} `);
+    if (!name) {
       return res.status(400).json({ error: "name is required" });
+    }
+
+    if (description && description.length > 500) {
+      return res.status(400).json({ error: "description must be 500 characters or less" });
     }
 
     if (!req.files || req.files.length === 0) {
@@ -419,26 +332,26 @@ app.post("/api/files", verifyToken, upload.array("files", 10), async (req, res, 
 
     console.log(`📂 Uploading ${req.files.length} files for user: ${phone}`);
 
-    // Загружаем файлы с повторными попытками
+    // Upload files with retries
     const fileUploads = await Promise.all(req.files.map(file => uploadFileWithRetries(file)));
 
-    // Удаляем неудачные загрузки
+    // Filter out failed uploads
     const successfulUploads = fileUploads.filter(file => file !== null);
 
     if (successfulUploads.length === 0) {
       return res.status(500).json({ error: "All file uploads failed" });
     }
 
-    // Создаем документ в Sanity
+    // Create document in Sanity
     const doc = {
       _type: "files",
-      name: req.body.name,
+      name,
       phone,
+      description: description || "", // Ensure description is always included
       files: successfulUploads,
       createdAt: new Date().toISOString()
     };
 
-    // Улучшенная функция создания документа
     const result = await createDocumentWithRetries(doc);
 
     res.clearCookie("auth_token", {
@@ -455,21 +368,24 @@ app.post("/api/files", verifyToken, upload.array("files", 10), async (req, res, 
 
 app.post("/api/links", verifyToken, async (req, res, next) => {
   try {
-    // Получаем телефон из токена вместо body
     const { phone } = req.user;
+    const { name, link, description } = req.body;
 
-    // Проверяем только name и link в теле запроса
-    if (!req.body.name) {
+    if (!name) {
       return res.status(400).json({ error: "name is required" });
     }
 
-    if (!req.body.link) {
+    if (!link) {
       return res.status(400).json({ error: "link is required" });
+    }
+
+    if (description && description.length > 500) {
+      return res.status(400).json({ error: "description must be 500 characters or less" });
     }
 
     // URL validation
     try {
-      new URL(req.body.link);
+      new URL(link);
     } catch (e) {
       return res.status(400).json({ error: "Invalid URL format" });
     }
@@ -477,16 +393,15 @@ app.post("/api/links", verifyToken, async (req, res, next) => {
     // Create document in Sanity
     const doc = {
       _type: "link",
-      name: req.body.name,
-      phone, // Используем телефон из токена
-      link: req.body.link,
+      name,
+      phone,
+      link,
+      description: description || "", // Ensure description is always included
       createdAt: new Date().toISOString()
     };
 
-    // Улучшенная функция создания документа
     const result = await createDocumentWithRetries(doc);
 
-    // Clear cookie before sending response
     res.clearCookie("auth_token", {
       httpOnly: true,
       secure: true,
@@ -498,6 +413,7 @@ app.post("/api/links", verifyToken, async (req, res, next) => {
     next(error);
   }
 });
+
 
 // Global error handler
 app.use((err, req, res, next) => {
