@@ -50,9 +50,9 @@ app.use('/api/', apiLimiter);
 
 // OTP specific rate limiting
 const otpLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 5, // limit each IP to 5 OTP requests per hour
-  message: { error: 'Too many OTP requests, please try again later.' }
+  windowMs: 24 * 60 * 60 * 1000, // 24 часа (сутки)
+  max: 5, // лимит каждого IP до 5 OTP запросов в сутки
+  message: { error: 'Dzienny limit 5 żądań  został przekroczony. Spróbuj ponownie jutro.' }
 });
 
 
@@ -201,16 +201,16 @@ const verifyToken = (req, res, next) => {
 
 
 
-async function waitForOtpRecord(phone, retries = 3, delay = 1000) {
-  for (let i = 0; i < retries; i++) {
-    const otpRecord = await redis.get(`otp:${phone}`);
-    if (otpRecord) return otpRecord;
+// async function waitForOtpRecord(phone, retries = 3, delay = 1000) {
+//   for (let i = 0; i < retries; i++) {
+//     const otpRecord = await redis.get(`otp:${phone}`);
+//     if (otpRecord) return otpRecord;
     
-    console.log(`Retrying fetch OTP (${i + 1}/${retries})...`);
-    await new Promise(res => setTimeout(res, delay));
-  }
-  return null;
-}
+//     console.log(`Retrying fetch OTP (${i + 1}/${retries})...`);
+//     await new Promise(res => setTimeout(res, delay));
+//   }
+//   return null;
+// }
 
 const retry = async (fn, retries = 3, delay = 1000) => {
   try {
@@ -226,8 +226,59 @@ app.get('/check-token', verifyToken, (req, res) => {
   res.json({ message: 'Token is valid', user: req.user });
 });
 
+// Обновленная функция waitForOtpRecord, которая просто возвращает то, что нашла в Redis
+async function waitForOtpRecord(phone, retries = 3, delay = 1000) {
+  for (let i = 0; i < retries; i++) {
+    const otpRecord = await redis.get(`otp:${phone}`);
+    if (otpRecord) return otpRecord;
+    
+    console.log(`Retrying fetch OTP (${i + 1}/${retries})...`);
+    await new Promise(res => setTimeout(res, delay));
+  }
+  return null;
+}
+
+// app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
+//   try {
+//     if (!validateRequest(req, res, ['phone'])) return;
+
+//     const { phone } = req.body;
+//     const otp = Math.floor(1000 + Math.random() * 9000).toString();
+//     const otpKey = `otp:${phone}`;
+
+//     console.log(`🔵 Checking existing OTP for ${phone} in Redis`);
+//     const existingOtp = await waitForOtpRecord(phone);
+//     if (existingOtp) {
+//       console.log(`⚠️ OTP already exists for ${phone}, request denied.`);
+//       return res.status(400).json({ error: "OTP already sent. Please wait before requesting a new one." });
+//     }
+
+//     console.log(`🟢 Storing OTP for ${phone} in Redis: ${otp}`);
+//     await redis.set(otpKey, otp, { ex: OTP_EXPIRY / 1000 });
+
+//     const testOtp = await waitForOtpRecord(phone);
+//     console.log(`✅ Redis now contains OTP: ${testOtp}`);
+
+//     console.log(`📨 Sending OTP to ${phone} via Twilio`);
+    
+//     // Пример функции retry для асинхронных операций
 
 
+// // Пример применения
+// await retry(() => twilioClient.messages.create({
+//   body: `Twój kod weryfikacyjny to: ${otp}`,
+//   from: process.env.TWILIO_PHONE,
+//   to: req.body.phone
+// }));
+
+//     res.status(200).json({ message: "OTP sent successfully", phone });
+//   } catch (error) {
+//     console.error("❌ Error in send-otp: ", error);
+//     next(error);
+//   }
+// });
+
+// Updated function to send OTP
 app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
   try {
     if (!validateRequest(req, res, ['phone'])) return;
@@ -235,31 +286,46 @@ app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
     const { phone } = req.body;
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
     const otpKey = `otp:${phone}`;
-
+    const sequenceKey = `otp_sequence:${phone}`;
+    
+    // Check for existing OTP
     console.log(`🔵 Checking existing OTP for ${phone} in Redis`);
-    const existingOtp = await waitForOtpRecord(phone);
+    const existingOtp = await redis.get(otpKey);
+    
+    // Delete existing OTP if found
     if (existingOtp) {
-      console.log(`⚠️ OTP already exists for ${phone}, request denied.`);
-      return res.status(400).json({ error: "OTP already sent. Please wait before requesting a new one." });
+      console.log(`⚠️ Found existing OTP for ${phone}, deleting it to create a new one.`);
+      await redis.del(otpKey);
     }
-
-    console.log(`🟢 Storing OTP for ${phone} in Redis: ${otp}`);
+    
+    // Get next sequence number
+    let sequence = 1;
+    const existingSequence = await redis.get(sequenceKey);
+    if (existingSequence) {
+      sequence = parseInt(existingSequence) + 1;
+    }
+    
+    // Save new sequence
+    await redis.set(sequenceKey, sequence.toString(), { ex: 24 * 60 * 60 });
+    
+    // Store OTP as a simple string instead of JSON
+    console.log(`🟢 Storing OTP for ${phone} in Redis: ${otp} (sequence: ${sequence})`);
     await redis.set(otpKey, otp, { ex: OTP_EXPIRY / 1000 });
 
-    const testOtp = await waitForOtpRecord(phone);
+    // Store sequence separately
+    await redis.set(`${otpKey}:sequence`, sequence.toString(), { ex: OTP_EXPIRY / 1000 });
+
+    const testOtp = await redis.get(otpKey);
     console.log(`✅ Redis now contains OTP: ${testOtp}`);
 
-    console.log(`📨 Sending OTP to ${phone} via Twilio`);
+    console.log(`📨 Sending OTP to ${phone} via Twilio with sequence ${sequence}`);
     
-    // Пример функции retry для асинхронных операций
-
-
-// Пример применения
-// await retry(() => twilioClient.messages.create({
-//   body: `Twój kod weryfikacyjny to: ${otp}`,
-//   from: process.env.TWILIO_PHONE,
-//   to: req.body.phone
-// }));
+    // Send SMS with sequence number
+    await retry(() => twilioClient.messages.create({
+      body: `Twój kod N ${sequence} weryfikacyjny to: ${otp}`,
+      from: process.env.TWILIO_PHONE,
+      to: req.body.phone
+    }));
 
     res.status(200).json({ message: "OTP sent successfully", phone });
   } catch (error) {
@@ -268,32 +334,85 @@ app.post("/api/send-otp", otpLimiter, async (req, res, next) => {
   }
 });
 
+// app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
+//   try {
+//     if (!validateRequest(req, res, ['phone', 'otp'])) return;
+
+//     const { phone, otp } = req.body;
+//     const otpKey = `otp:${phone}`;
+
+//     console.log(`🔵 Fetching stored OTP for ${phone} from Redis`);
+//     const storedOtp = await waitForOtpRecord(phone);
+//     console.log(`Stored OTP (${typeof storedOtp}): ${storedOtp}, Entered OTP (${typeof otp}): ${otp}`);
+    
+//     if (!storedOtp) {
+//       console.log(`❌ No OTP found for ${phone} or it has expired.`);
+//       return res.status(400).json({ error: "Invalid or expired OTP" });
+//     }
+
+//     if (storedOtp.toString().trim() !== otp.toString().trim()) {
+//       console.log(`❌ Incorrect OTP entered for ${phone}`);
+//       return res.status(400).json({ error: "Incorrect OTP" });
+//     }
+
+//     console.log(`✅ OTP verified successfully for ${phone}, deleting from Redis`);
+//     await redis.del(otpKey);
+
+//     const token = jwt.sign({ phone }, SECRET_KEY, { expiresIn: "1h" });
+
+//     console.log(`🔑 Generating JWT token for ${phone}`);
+//     res.cookie("auth_token", token, {
+//       httpOnly: true,
+//       secure: true,
+//       sameSite: 'None',
+//       maxAge: 60 * 60 * 1000
+//     });
+
+//     res.status(200).json({ message: "✅ OTP verified successfully!" });
+//   } catch (error) {
+//     console.error("❌ Error in validate-otp: ", error);
+//     next(error);
+//   }
+// });
+
+// Updated function to validate OTP
 app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
   try {
     if (!validateRequest(req, res, ['phone', 'otp'])) return;
-
+    
     const { phone, otp } = req.body;
     const otpKey = `otp:${phone}`;
-
+    
     console.log(`🔵 Fetching stored OTP for ${phone} from Redis`);
-    const storedOtp = await waitForOtpRecord(phone);
-    console.log(`Stored OTP (${typeof storedOtp}): ${storedOtp}, Entered OTP (${typeof otp}): ${otp}`);
+    const storedOtp = await redis.get(otpKey);
     
     if (!storedOtp) {
       console.log(`❌ No OTP found for ${phone} or it has expired.`);
       return res.status(400).json({ error: "Invalid or expired OTP" });
     }
-
-    if (storedOtp.toString().trim() !== otp.toString().trim()) {
+    
+    // Get sequence for logging purposes
+    const sequence = await redis.get(`${otpKey}:sequence`) || "unknown";
+    console.log(`📊 Found OTP: ${storedOtp} (sequence: ${sequence})`);
+    
+    // Simple string comparison
+    const enteredOtp = String(otp).trim();
+    const storedOtpStr = String(storedOtp).trim();
+    
+    console.log(`Compare - Stored OTP: "${storedOtpStr}" (${typeof storedOtpStr}), Entered OTP: "${enteredOtp}" (${typeof enteredOtp})`);
+    
+    if (storedOtpStr !== enteredOtp) {
       console.log(`❌ Incorrect OTP entered for ${phone}`);
       return res.status(400).json({ error: "Incorrect OTP" });
     }
-
+    
     console.log(`✅ OTP verified successfully for ${phone}, deleting from Redis`);
     await redis.del(otpKey);
-
+    await redis.del(`${otpKey}:sequence`);
+    
+    // Generate JWT token
     const token = jwt.sign({ phone }, SECRET_KEY, { expiresIn: "1h" });
-
+    
     console.log(`🔑 Generating JWT token for ${phone}`);
     res.cookie("auth_token", token, {
       httpOnly: true,
@@ -301,7 +420,7 @@ app.post("/api/validate-otp", apiLimiter, async (req, res, next) => {
       sameSite: 'None',
       maxAge: 60 * 60 * 1000
     });
-
+    
     res.status(200).json({ message: "✅ OTP verified successfully!" });
   } catch (error) {
     console.error("❌ Error in validate-otp: ", error);
